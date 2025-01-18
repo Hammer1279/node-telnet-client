@@ -1,0 +1,19 @@
+{
+  "name": "telnet-client",
+  "version": "1.0.0",
+  "description": "To be used with HTDev BBS Server for encrypted communication and extended functionality.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://git.ht-dev.de/Hammer1279/node-telnet-client"
+  },
+  "author": "Hammer1279",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "telnet-client": "file:"
+  }
+}
