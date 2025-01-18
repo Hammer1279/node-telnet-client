@@ -16,7 +16,7 @@ jobs:
       matrix:
         arch:
           - x64
-          - arm64
+          # - arm64
         os:
           - linux
           - win
