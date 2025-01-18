@@ -1,10 +1,12 @@
 {
   "name": "telnet-client",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "To be used with HTDev BBS Server for encrypted communication and extended functionality.",
   "main": "index.js",
+  "bin": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "npx pkg package.json -C GZip"
   },
   "repository": {
     "type": "git",
@@ -12,8 +14,23 @@
   },
   "author": "Hammer1279",
   "license": "MIT",
-  "type": "module",
   "dependencies": {
     "telnet-client": "file:"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^5.12.1"
+  },
+  "type": "commonjs",
+  "pkg": {
+    "assets": [
+      "README.md",
+      "LICENSE",
+      "package.json"
+    ],
+    "targets": [
+      "latest-win-x64",
+      "latest-linux-x64"
+    ],
+    "outputPath": "dist"
   }
 }
