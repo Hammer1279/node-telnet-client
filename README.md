@@ -2,6 +2,10 @@
 
 To be used with HTDev BBS Server for encrypted communication and extended functionality.
 
+## Autorun command
+
+Create a file called `batchrun.txt` in the same directory as the client, write each command on a separate line
+
 ## Installation
 
 Just download the latest binary for your operating system from the releases page for the last stable version.

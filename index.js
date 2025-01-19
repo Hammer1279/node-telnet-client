@@ -108,6 +108,7 @@ const socket = createConnection(port, hostname);
 writer.pipe(socket);
 
 let hold = false; // Hold input
+let holdBuffer = ""; // Buffer data when on hold
 
 process.stdin.setEncoding("ascii");
 process.stdin.setRawMode(true);
@@ -142,12 +143,25 @@ process.stdin.on('data', async (key) => {
             hold = false; // Release input
             process.stdin.setRawMode(true);
             console.log("Exited client command mode");
+            process.stdout.write(holdBuffer);
+            holdBuffer = "";
             process.stdout.write("> ");
         } else if (command == "disconnect") {
             send(IP); // Interrupt Process
+        } else if (command == "status") {
+            console.log("Client status:");
+            console.log("Host:", hostname + ":" + port);
+            console.log("Advanced Features unlocked:", advancedFeatures);
+            console.log("Initialized:", initialized);
+            console.log("Encrypted:", encrypted);
+            console.log("Batch Delay:", delayMs + "ms");
+            // console.log("Public Key:", key.getPublicKey() ? key.getPublicKey().toString("hex") : "null");
+            // console.log("Private Key:", privateKey ? privateKey.toString("hex") : "null");
+            process.stdout.write("$ ");
         } else if (command == "help") {
             // Add any additional functionality for client side commands
             console.log("Client commands:");
+            console.log("status - Show client status");
             console.log("disconnect - Disconnect from server");
             console.log("exit - Exit client command mode");
             process.stdout.write("$ ");
@@ -189,8 +203,11 @@ socket.on("data", (data) => {
             encrypted = true;
             console.debug("Encryption enabled");
             console.debug("Private Key: " + privateKey.toString("hex"));
-        } else {
+        } else if (!hold) {
             process.stdout.write(data);
+        } else {
+            // console.debug("Data on hold");
+            holdBuffer += data.toString();
         }
     } else {
         // decrypt data
@@ -202,7 +219,17 @@ socket.on("connect", async () => {
     process.stdin.pause(); // Pause input
 
     // initialization
-    socket.write(Buffer.concat([IAC, WILL, NAWS, SB, NAWS, Buffer.from([/* 24x80 */ 0x00, 0x18, 0x00, 0x50]), SE])); // Negotiate About Window Size
+    const columns = process.stdout.columns || 80;
+    const rows = process.stdout.rows || 24;
+
+    // Create buffer for window size: [columns-high, columns-low, rows-high, rows-low]
+    const windowSize = Buffer.from([
+        (columns >> 8) & 0xFF,  // high byte of columns
+        columns & 0xFF,         // low byte of columns
+        (rows >> 8) & 0xFF,    // high byte of rows
+        rows & 0xFF            // low byte of rows
+    ]);
+    socket.write(Buffer.concat([IAC, WILL, NAWS, SB, NAWS, windowSize, SE])); // Negotiate About Window Size
     await delay(delayMs); // Wait for server to process
     socket.write(Buffer.concat([IAC, WILL, TERMINAL_TYPE, IAC, SB, TERMINAL_TYPE, NUL, Buffer.from("xterm-256color"), IAC, SE])); // Terminal Type
     await delay(delayMs);
@@ -224,11 +251,20 @@ socket.on("connect", async () => {
     // initialization complete
 
     await send("help");
-    await delay(500);
+    await delay(delayMs);
     process.stdout.write("\rCtrl+X for client side commands\r\nCtrl+C to exit, Ctrl+D to force close\r\n> ");
     process.stdin.resume(); // Resume input
     // more commands can be added here
 
+    if (fs.existsSync("batchrun.txt")) {
+        const batchCommands = fs.readFileSync("batchrun.txt", "utf-8").split("\n");
+        for (const command of batchCommands) {
+            if (command.trim()) {
+                await send(command.trim());
+                await delay(delayMs);
+            }
+        }
+    }
 
 });
 
