@@ -9,6 +9,8 @@ const port = process.argv[3] || 23;
 const hostname = process.argv[2] || (process.pkg ? "dom.ht-dev.de" : "localhost");
 let delayMs = process.argv[4] || 100; // Command delay in milliseconds
 
+const advancedFeatures = false; // Enable advanced features
+
 // Diffie-Hellman parameters
 const keyCurve = "prime256v1"; // key exchange curve, make this negotiable in the future
 
@@ -24,6 +26,7 @@ class MemoryStream extends Transform {
 }
 
 const writer = new MemoryStream();
+let initialized = false; // Initialization status, do not modify directly, runtime only
 let encrypted = false; // Encryption status, do not modify directly, runtime only
 let privateKey; // Private key, do not modify directly, runtime only
 const key = createECDH(keyCurve);
@@ -155,7 +158,7 @@ process.stdin.on('data', async (key) => {
 });
 
 socket.on("data", (data) => {
-    if (!encrypted) {
+    if (!encrypted || !initialized) {
         if (data.equals(PAUSE)) {
             process.stdin.pause();
         } else if (data.equals(RESUME)) {
@@ -189,6 +192,8 @@ socket.on("data", (data) => {
         } else {
             process.stdout.write(data);
         }
+    } else {
+        // decrypt data
     }
 });
 
@@ -203,18 +208,22 @@ socket.on("connect", async () => {
     await delay(delayMs);
     socket.write(Buffer.concat([IAC, DO, ECHO])); // Echo
     await delay(delayMs);
-    socket.write(Buffer.concat([IAC, WILL, CUSTOM_CLIENT_INIT])); // Custom Client Initialization
-    await delay(delayMs);
-    // socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
+    if (advancedFeatures) {
+        socket.write(Buffer.concat([IAC, WILL, CUSTOM_CLIENT_INIT])); // Custom Client Initialization
+        await delay(delayMs);
+    }
+    socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
     if (encrypted) {
         // increase delay for encryption
-        delayMs += 500;
+        delayMs += 200;
     }
     // from here on encryption is enabled, do not use socket.write() directly anymore
     await delay(delayMs);
+    console.debug("Initialization complete");
+    initialized = true;
     // initialization complete
 
-    // await send("help");
+    await send("help");
     await delay(500);
     process.stdout.write("\rCtrl+X for client side commands\r\nCtrl+C to exit, Ctrl+D to force close\r\n> ");
     process.stdin.resume(); // Resume input
