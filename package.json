@@ -1,6 +1,6 @@
 {
   "name": "telnet-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "To be used with HTDev BBS Server for encrypted communication and extended functionality.",
   "main": "index.js",
   "bin": "index.js",
