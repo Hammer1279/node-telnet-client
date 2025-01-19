@@ -1,10 +1,15 @@
 const fs = require("fs");
 const path = require("path");
 const { createConnection } = require('net');
+const { createDiffieHellman, createDiffieHellmanGroup } = require('crypto');
 
-const port = 23;
+const port = process.argv[3] || 23;
 const hostname = process.argv[2] || (process.pkg ? "dom.ht-dev.de" : "localhost");
-const delayMs = 100; // Command delay in milliseconds
+const delayMs = process.argv[4] || 100; // Command delay in milliseconds
+
+// Numeric Buffer values
+const NUL = Buffer.from([0x00]); // Null
+const ONE = Buffer.from([0x01]); // One
 
 // Telnet commands
 const IAC = Buffer.from([0xff]); // Interpret As Command
@@ -45,6 +50,8 @@ const AUTHENTICATION = Buffer.from([0x83]); // Authentication
 const FILE_TRANSFER = Buffer.from([0x85]); // File Transfer
 const PAUSE = Buffer.from([0x86]); // Pause
 const RESUME = Buffer.from([0x87]); // Resume
+const START_CONTENT = Buffer.from([0x88]); // Start Content
+const END_CONTENT = Buffer.from([0x89]); // End Content
 
 //  Set the path of the project folder base on whether it is run with nodejs or as an executable
 let project_folder;
@@ -76,8 +83,9 @@ process.stdin.on('data', async (key) => {
     if (key === '\u0004') { // Ctrl+D
         process.exit();
     } else if (key === '\u0003') { // Ctrl+C
-        send("\u0003");
+        send(IP); // Interrupt Process
     } else if (key === '\u0018') { // Ctrl+X
+        process.stdout.write("\r");
         console.log("Entered client command mode");
         hold = true; // Hold input
         process.stdin.setRawMode(false);
@@ -85,7 +93,7 @@ process.stdin.on('data', async (key) => {
     }
 
     // Log Unicode values of input for debugging
-    console.debug("Key pressed:", Array.from(key).map(b => '\\u' + b.toString(16).padStart(4, '0')));
+    // console.debug("Key pressed:", Array.from(key).map(b => '\\u' + b.toString(16).padStart(4, '0')));
 
     if (key == "\r") {
         // Enter key
@@ -93,7 +101,7 @@ process.stdin.on('data', async (key) => {
     } else if (!hold) {
         socket.write(key);
     } else {
-        console.debug("Input on hold");
+        // console.debug("Input on hold");
         const command = key.replace(/\r?\n|\r/g, ''); // Remove new line characters
         if (["exit", "quit"].includes(command)) {
             hold = false; // Release input
@@ -101,9 +109,13 @@ process.stdin.on('data', async (key) => {
             console.log("Exited client command mode");
             process.stdout.write("> ");
         } else if (command == "disconnect") {
-            send("\u0003");
+            send(IP); // Interrupt Process
         } else if (command == "help") {
             // Add any additional functionality for client side commands
+            console.log("Client commands:");
+            console.log("disconnect - Disconnect from server");
+            console.log("exit - Exit client command mode");
+            process.stdout.write("$ ");
         } else {
             process.stdout.write("$ ");
         }
@@ -118,9 +130,12 @@ socket.on("data", (data) => {
     } else if (data.equals(IP)) {
         process.exit();
     } else if (data.equals(Buffer.concat([IAC, DO, CUSTOM_CLIENT_INIT]))) {
+        // server supports custom client features
         socket.write(Buffer.concat([IAC, WILL, KEY_EXCHANGE])); // Start Key Exchange
-    } else if (data.equals(Buffer.concat([IAC, DO, KEY_EXCHANGE]))) {
-        // Key Exchange to be implemented here
+    } else if (data.includes(Buffer.concat([IAC, DO, KEY_EXCHANGE]))) {
+        // generate keys
+    } else if (data.equals(Buffer.concat([IAC, SB, KEY_EXCHANGE, ONE /* value required */, IAC, SE]))) {
+        // send key to server
     } else {
         process.stdout.write(data);
     }
@@ -132,12 +147,12 @@ socket.on("connect", async () => {
     // initialization
     socket.write(Buffer.concat([IAC, WILL, NAWS, SB, NAWS, Buffer.from([/* 24x80 */ 0x00, 0x18, 0x00, 0x50]), SE])); // Negotiate About Window Size
     await delay(delayMs); // Wait for server to process
-    socket.write(Buffer.concat([IAC, WILL, TERMINAL_TYPE, IAC, SB, TERMINAL_TYPE, Buffer.from("xterm-256color"), IAC, SE])); // Terminal Type
+    socket.write(Buffer.concat([IAC, WILL, TERMINAL_TYPE, IAC, SB, TERMINAL_TYPE, NUL, Buffer.from("xterm-256color"), IAC, SE])); // Terminal Type
     await delay(delayMs);
-    socket.write(Buffer.concat([IAC, WILL, ECHO])); // Echo
+    socket.write(Buffer.concat([IAC, DO, ECHO])); // Echo
     await delay(delayMs);
     socket.write(Buffer.concat([IAC, WILL, CUSTOM_CLIENT_INIT])); // Custom Client Initialization
-    await delay(delayMs);
+    await delay(delayMs * 10);
     socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
     await delay(delayMs);
     // initialization complete
@@ -145,6 +160,9 @@ socket.on("connect", async () => {
     await send("help");
     await delay(500);
     process.stdout.write("\rCtrl+X for client side commands\r\nCtrl+C to exit, Ctrl+D to force close\r\n> ");
+    // more commands can be added here
+
+
 });
 
 socket.on("end", () => {

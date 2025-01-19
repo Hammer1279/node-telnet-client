@@ -37,6 +37,7 @@ jobs:
         with:
           entrypoint: index.js
           arch: ${{ matrix.arch }}
+          # node-version: 20
           os: ${{ matrix.os }}
         env:
           PKG_ARCH: ${{ matrix.arch }}
