@@ -1,11 +1,41 @@
 const fs = require("fs");
 const path = require("path");
 const { createConnection } = require('net');
-const { createDiffieHellman, createDiffieHellmanGroup } = require('crypto');
+const { createHash, createECDH } = require('crypto');
+const { Transform } = require('stream');
 
+// Application settings
 const port = process.argv[3] || 23;
 const hostname = process.argv[2] || (process.pkg ? "dom.ht-dev.de" : "localhost");
-const delayMs = process.argv[4] || 100; // Command delay in milliseconds
+let delayMs = process.argv[4] || 100; // Command delay in milliseconds
+
+// Diffie-Hellman parameters
+const keyCurve = "prime256v1"; // key exchange curve, make this negotiable in the future
+
+class MemoryStream extends Transform {
+    constructor(options = {}) {
+        super(options);
+    }
+
+    _transform(chunk, encoding, callback) {
+        this.push(chunk);
+        callback();
+    }
+}
+
+const writer = new MemoryStream();
+let encrypted = false; // Encryption status, do not modify directly, runtime only
+let privateKey; // Private key, do not modify directly, runtime only
+const key = createECDH(keyCurve);
+
+const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+const send = async (command) => {
+    await delay(delayMs);
+    writer.write(command); // Command
+    await delay(delayMs);
+    writer.write("\r\n"); // Line Feed
+};
 
 // Numeric Buffer values
 const NUL = Buffer.from([0x00]); // Null
@@ -65,12 +95,14 @@ if (process.pkg) {
 }
 
 if (process.pkg) {
-    console.debug = () => {}; // Disable debug logging when run as an executable
+    console.debug = () => { }; // Disable debug logging when run as an executable
     fs.writeFileSync(path.join(project_folder, "README.md"), fs.readFileSync(path.join(__dirname, "README.md"))); // copy newest readme to folder
     fs.writeFileSync(path.join(project_folder, "LICENSE"), fs.readFileSync(path.join(__dirname, "LICENSE"))); // copy newest license to folder
 }
 
 const socket = createConnection(port, hostname);
+
+writer.pipe(socket);
 
 let hold = false; // Hold input
 
@@ -123,26 +155,46 @@ process.stdin.on('data', async (key) => {
 });
 
 socket.on("data", (data) => {
-    if (data.equals(PAUSE)) {
-        process.stdin.pause();
-    } else if (data.equals(RESUME)) {
-        process.stdin.resume();
-    } else if (data.equals(IP)) {
-        process.exit();
-    } else if (data.equals(Buffer.concat([IAC, DO, CUSTOM_CLIENT_INIT]))) {
-        // server supports custom client features
-        socket.write(Buffer.concat([IAC, WILL, KEY_EXCHANGE])); // Start Key Exchange
-    } else if (data.includes(Buffer.concat([IAC, DO, KEY_EXCHANGE]))) {
-        // generate keys
-    } else if (data.equals(Buffer.concat([IAC, SB, KEY_EXCHANGE, ONE /* value required */, IAC, SE]))) {
-        // send key to server
-    } else {
-        process.stdout.write(data);
+    if (!encrypted) {
+        if (data.equals(PAUSE)) {
+            process.stdin.pause();
+        } else if (data.equals(RESUME)) {
+            process.stdin.resume();
+        } else if (data.equals(IP)) {
+            process.exit();
+        } else if (data.equals(Buffer.concat([IAC, DO, CUSTOM_CLIENT_INIT]))) {
+            // server supports custom client features
+            socket.write(Buffer.concat([IAC, WILL, KEY_EXCHANGE])); // Start Key Exchange
+        } else if (data.includes(Buffer.concat([IAC, DO, KEY_EXCHANGE]))) {
+            // generate keys
+            const publicKey = key.generateKeys();
+            console.debug("Generated Key: " + publicKey.toString("hex"));
+        } else if (data.equals(Buffer.concat([IAC, SB, KEY_EXCHANGE, ONE /* value required */, IAC, SE]))) {
+            socket.write(Buffer.concat([IAC, SB, KEY_EXCHANGE, NUL, key.getPublicKey(), IAC, SE]));
+            // send key to server
+        } else if (data.includes(Buffer.concat([IAC, SB, KEY_EXCHANGE, NUL /* value provided */]))) {
+            // server sent its key, generate secret
+            console.debug("Key exchange received");
+            const offsetBegin = data.indexOf(SB) + 2;
+            const offsetEnd = data.lastIndexOf(SE) - 1;
+            const keyData = data.subarray(offsetBegin + 1, offsetEnd); // client public key
+            console.log("Extracted key:", keyData.toString("hex"));
+            privateKey = key.computeSecret(keyData);
+            socket.write(Buffer.concat([IAC, WILL, ENCRYPTION])); // Enable Encryption
+        } else if (data.equals(Buffer.concat([IAC, DO, ENCRYPTION]))) {
+            // enable encryption
+            encrypted = true;
+            console.debug("Encryption enabled");
+            console.debug("Private Key: " + privateKey.toString("hex"));
+        } else {
+            process.stdout.write(data);
+        }
     }
 });
 
 socket.on("connect", async () => {
     console.log("Connected to server");
+    process.stdin.pause(); // Pause input
 
     // initialization
     socket.write(Buffer.concat([IAC, WILL, NAWS, SB, NAWS, Buffer.from([/* 24x80 */ 0x00, 0x18, 0x00, 0x50]), SE])); // Negotiate About Window Size
@@ -152,14 +204,20 @@ socket.on("connect", async () => {
     socket.write(Buffer.concat([IAC, DO, ECHO])); // Echo
     await delay(delayMs);
     socket.write(Buffer.concat([IAC, WILL, CUSTOM_CLIENT_INIT])); // Custom Client Initialization
-    await delay(delayMs * 10);
-    socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
+    await delay(delayMs);
+    // socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
+    if (encrypted) {
+        // increase delay for encryption
+        delayMs += 500;
+    }
+    // from here on encryption is enabled, do not use socket.write() directly anymore
     await delay(delayMs);
     // initialization complete
 
-    await send("help");
+    // await send("help");
     await delay(500);
     process.stdout.write("\rCtrl+X for client side commands\r\nCtrl+C to exit, Ctrl+D to force close\r\n> ");
+    process.stdin.resume(); // Resume input
     // more commands can be added here
 
 
@@ -169,15 +227,6 @@ socket.on("end", () => {
     console.log("\nDisconnected from server");
     process.exit();
 });
-
-const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-
-const send = async (command) => {
-    await delay(delayMs);
-    socket.write(command); // Command
-    await delay(delayMs);
-    socket.write("\r\n"); // Line Feed
-};
 
 module.exports = {
     delay,
