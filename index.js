@@ -1,18 +1,17 @@
 const fs = require("fs");
 const path = require("path");
 const { createConnection } = require('net');
-const { createHash, createECDH } = require('crypto');
+const { createHash, createECDH, createCipheriv, createDecipheriv, randomBytes } = require('crypto');
 const { Transform } = require('stream');
 
 // Application settings
 const port = process.argv[3] || 23;
 const hostname = process.argv[2] || (process.pkg ? "dom.ht-dev.de" : "localhost");
 let delayMs = process.argv[4] || 100; // Command delay in milliseconds
+const encryptionDelay = 200; // additional delay for encryption
+const initializationDelay = 500; // additional delay for initialization
 
-const advancedFeatures = false; // Enable advanced features
-
-// Diffie-Hellman parameters
-const keyCurve = "prime256v1"; // key exchange curve, make this negotiable in the future
+const advancedFeatures = true; // Enable advanced features
 
 class MemoryStream extends Transform {
     constructor(options = {}) {
@@ -29,7 +28,9 @@ const writer = new MemoryStream();
 let initialized = false; // Initialization status, do not modify directly, runtime only
 let encrypted = false; // Encryption status, do not modify directly, runtime only
 let privateKey; // Private key, do not modify directly, runtime only
-const key = createECDH(keyCurve);
+let keyCurve; // Key curve, do not modify directly, runtime only
+let encryptionAlgorithm; // Encryption algorithm, do not modify directly, runtime only
+let echdKey; // ECDH key, do not modify directly, runtime only
 
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -85,6 +86,42 @@ const PAUSE = Buffer.from([0x86]); // Pause
 const RESUME = Buffer.from([0x87]); // Resume
 const START_CONTENT = Buffer.from([0x88]); // Start Content
 const END_CONTENT = Buffer.from([0x89]); // End Content
+
+// Encrypt
+function encrypt(plaintext, key = privateKey, encoding = 'utf8') {
+    // Generate a random IV (12 bytes recommended for GCM)
+    const iv = randomBytes(12);
+
+    // Create cipher, providing algo, key, and IV
+    const cipher = createCipheriv(encryptionAlgorithm, key, iv);
+
+    // Encrypt data
+    const encrypted = Buffer.concat([cipher.update(plaintext, encoding), cipher.final()]);
+    const authTag = cipher.getAuthTag(); // Integrity tag
+
+    // Return IV + tag + ciphertext
+    return Buffer.concat([iv, authTag, encrypted]);
+}
+
+// Decrypt
+function decrypt(ciphertext, key = privateKey, encoding = 'utf8') {
+    // Extract IV (first 12 bytes)
+    const iv = ciphertext.slice(0, 12);
+    
+    // Extract tag (next 16 bytes)
+    const tag = ciphertext.slice(12, 28);
+    
+    // Remainder is the actual encrypted data
+    const data = ciphertext.slice(28);
+
+    // Create decipher, set auth tag
+    const decipher = createDecipheriv(encryptionAlgorithm, key, iv);
+    decipher.setAuthTag(tag);
+
+    // Decrypt data
+    const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
+    return decrypted.toString(encoding);
+}
 
 //  Set the path of the project folder base on whether it is run with nodejs or as an executable
 let project_folder;
@@ -158,10 +195,18 @@ process.stdin.on('data', async (key) => {
             // console.log("Public Key:", key.getPublicKey() ? key.getPublicKey().toString("hex") : "null");
             // console.log("Private Key:", privateKey ? privateKey.toString("hex") : "null");
             process.stdout.write("$ ");
+        } else if (command == "keyinfo") {
+            console.log("Key Information:");
+            console.log("Key Curve:", keyCurve);
+            console.log("Encryption Algorithm:", encryptionAlgorithm);
+            console.log("Public Key:", echdKey.getPublicKey() ? echdKey.getPublicKey().toString("hex") : "null");
+            console.log("Private Key:", privateKey ? privateKey.toString("hex") : "null");
+            process.stdout.write("$ ");
         } else if (command == "help") {
             // Add any additional functionality for client side commands
             console.log("Client commands:");
             console.log("status - Show client status");
+            console.log("keyinfo - Show key information");
             console.log("disconnect - Disconnect from server");
             console.log("exit - Exit client command mode");
             process.stdout.write("$ ");
@@ -179,15 +224,22 @@ socket.on("data", (data) => {
             process.stdin.resume();
         } else if (data.equals(IP)) {
             process.exit();
+        } else if (data.includes(Buffer.concat([IAC, SB, CUSTOM_CLIENT_INIT, NUL]))) {
+            const offsetBegin = data.indexOf(SB) + 2;
+            const offsetEnd = data.lastIndexOf(SE) - 1;
+            const algorithmData = data.subarray(offsetBegin + 1, offsetEnd);
+            keyCurve = algorithmData.toString('utf8');
+            echdKey = createECDH(keyCurve);
+            console.debug("Using key curve:", keyCurve);
         } else if (data.equals(Buffer.concat([IAC, DO, CUSTOM_CLIENT_INIT]))) {
             // server supports custom client features
             socket.write(Buffer.concat([IAC, WILL, KEY_EXCHANGE])); // Start Key Exchange
         } else if (data.includes(Buffer.concat([IAC, DO, KEY_EXCHANGE]))) {
             // generate keys
-            const publicKey = key.generateKeys();
+            const publicKey = echdKey.generateKeys();
             console.debug("Generated Key: " + publicKey.toString("hex"));
         } else if (data.equals(Buffer.concat([IAC, SB, KEY_EXCHANGE, ONE /* value required */, IAC, SE]))) {
-            socket.write(Buffer.concat([IAC, SB, KEY_EXCHANGE, NUL, key.getPublicKey(), IAC, SE]));
+            socket.write(Buffer.concat([IAC, SB, KEY_EXCHANGE, NUL, echdKey.getPublicKey(), IAC, SE]));
             // send key to server
         } else if (data.includes(Buffer.concat([IAC, SB, KEY_EXCHANGE, NUL /* value provided */]))) {
             // server sent its key, generate secret
@@ -196,8 +248,14 @@ socket.on("data", (data) => {
             const offsetEnd = data.lastIndexOf(SE) - 1;
             const keyData = data.subarray(offsetBegin + 1, offsetEnd); // client public key
             console.log("Extracted key:", keyData.toString("hex"));
-            privateKey = key.computeSecret(keyData);
+            privateKey = echdKey.computeSecret(keyData);
             socket.write(Buffer.concat([IAC, WILL, ENCRYPTION])); // Enable Encryption
+        } else if (data.includes(Buffer.concat([IAC, SB, ENCRYPTION, NUL]))) {
+            const offsetBegin = data.indexOf(SB) + 2;
+            const offsetEnd = data.lastIndexOf(SE) - 1;
+            const algorithmData = data.subarray(offsetBegin + 1, offsetEnd);
+            encryptionAlgorithm = algorithmData.toString('utf8');
+            console.debug("Using encryption algorithm:", encryptionAlgorithm);
         } else if (data.equals(Buffer.concat([IAC, DO, ENCRYPTION]))) {
             // enable encryption
             encrypted = true;
@@ -211,6 +269,16 @@ socket.on("data", (data) => {
         }
     } else {
         // decrypt data
+        try {
+            const decryptedData = decrypt(data, privateKey);
+            process.stdout.write(decryptedData);
+        } catch (error) {
+            console.error("Decryption error:", error);
+            console.error("Data:", data.toString("hex"));
+            console.debug("Algorithm:", encryptionAlgorithm);
+            console.debug("Private Key:", privateKey.toString("hex"));
+            console.debug("Public Key:", echdKey.getPublicKey().toString("hex"));
+        }
     }
 });
 
@@ -239,15 +307,16 @@ socket.on("connect", async () => {
         socket.write(Buffer.concat([IAC, WILL, CUSTOM_CLIENT_INIT])); // Custom Client Initialization
         await delay(delayMs);
     }
-    socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
     if (encrypted) {
         // increase delay for encryption
-        delayMs += 200;
+        delayMs += encryptionDelay;
     }
-    // from here on encryption is enabled, do not use socket.write() directly anymore
-    await delay(delayMs);
-    console.debug("Initialization complete");
+    await delay(initializationDelay); // Wait for server to process
+    await send(""); // Send empty command to initialize connection
     initialized = true;
+    console.debug("Initialization complete");
+    // socket.write(Buffer.from([0x0d, 0x0a])); // Line Feed
+    // from here on encryption is enabled, do not use socket.write() directly anymore
     // initialization complete
 
     await send("help");
@@ -255,6 +324,8 @@ socket.on("connect", async () => {
     process.stdout.write("\rCtrl+X for client side commands\r\nCtrl+C to exit, Ctrl+D to force close\r\n> ");
     process.stdin.resume(); // Resume input
     // more commands can be added here
+
+    // console.log("Test:", decrypt(Buffer.from("eaffd8d028120ac5b1e8634438c522a91ca5bd9cbda1c5ac88321cd6d743b185b6e43cec1c1d6b1b1ad5fc623012582e666a0d1b83f7656dbdd2a8609e0ec9f1e6123ebb442455316a4bfe883d46", "hex"), privateKey))
 
     if (fs.existsSync("batchrun.txt")) {
         const batchCommands = fs.readFileSync("batchrun.txt", "utf-8").split("\n");
