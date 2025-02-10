@@ -1,6 +1,6 @@
 {
   "name": "telnet-client",
-  "version": "0.0.2",
+  "version": "0.0.2-dev",
   "description": "To be used with HTDev BBS Server for encrypted communication and extended functionality.",
   "main": "index.js",
   "bin": "index.js",
@@ -18,7 +18,8 @@
     "telnet-client": "file:"
   },
   "devDependencies": {
-    "@yao-pkg/pkg": "^5.12.1"
+    "@yao-pkg/pkg": "^5.12.1",
+    "protocol-registry": "^1.6.0"
   },
   "type": "commonjs",
   "pkg": {
