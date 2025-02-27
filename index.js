@@ -277,6 +277,9 @@ process.stdin.on('data', async (key) => {
             process.stdout.write("$ ");
         } else if (command == "debug") {
             socket.write(Buffer.concat([IAC, DO, STATUS])); // Debug request Status
+            setTimeout(() => {
+                process.stdout.write("$ ");
+            }, delayMs);
         } else if (command == "keyinfo") {
             console.log("Key Information:");
             console.log("Key Curve:", keyCurve);
