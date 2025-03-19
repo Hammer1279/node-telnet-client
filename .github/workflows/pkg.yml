@@ -33,7 +33,7 @@ jobs:
         run: npm install
 
       - name: Package into node binary
-        uses: lando/pkg-action@v2
+        uses: lando/pkg-action@v6
         with:
           entrypoint: index.js
           arch: ${{ matrix.arch }}
